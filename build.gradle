@@ -1,0 +1,146 @@
+plugins {
+    id 'eclipse'
+    id 'java'
+    id 'java-library'
+}
+
+version = '1.1'
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
+
+ant.importBuild('build.xml') {
+    String oldTargetName ->
+        return oldTargetName == 'build' ? 'ant_build' :
+            (oldTargetName == 'clean' ? 'ant_clean' : oldTargetName)
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = [ ant.properties['src.dir'] ]
+            outputDir = file(ant.properties['build.dir'])
+        }
+    resources {
+        srcDirs = [ projectDir ]
+        includes = [ 'log4j.properties' ]
+        }
+    }
+}
+
+repositories {
+    flatDir {
+        name = 'OLTP Bench local lib directory'
+        dir files('lib', 'lib/hibernate')
+    }
+}
+
+dependencies {
+    implementation files(
+        'lib/jdo2-index.jar',
+        'lib/jpa2.jar',
+        'lib/openjpa-index-annotation.jar',
+        'lib/hsqldb.jar',
+        'lib/openjpa-index-annotation.jar'
+    )
+
+    implementation ':c3p0:0.9.1.2',
+        ':cassandra-jdbc-wrapper:3.0.3',
+        ':commons-cli:1.2',
+        ':commons-collections:3.2.1',
+        ':commons-collections15:4.01',
+        ':commons-configuration:1.6',
+        ':commons-io:2.2',
+        ':commons-jxpath:1.3',
+        ':commons-lang:2.6',
+        ':commons-logging:1.1.1',
+        ':commons-math3:3.0',
+        ':ganymed-ssh2:build250',
+        ':h2:1.3.163',
+        ':httpclient:4.3.1',
+        ':httpcore:4.3',
+        ':httpmime:4.3.1',
+        ':jtds:1.2.5',
+        ':junit:4.4',
+        ':log4j:1.2.15',
+        ':log4jdbc4:1.2',
+        ':monetdb-jdbc:2.9',
+        ':mysql-connector-java:5.1.22',
+        ':opencsv:2.3',
+        ':postgresql:9.4.1209.jre6',
+        ':slf4j-simple:1.7.5',
+        ':sqlite-jdbc:3.6.20.1'
+
+    // hiberante-related stuff
+    implementation files('lib/hibernate/hibernate3.jar')
+    implementation ':jta:1.1',
+        ':slf4j-api:1.6.1',
+        ':hibernate-jpa-2.0-api:1.0.1.Final',
+        ':javassist:3.12.0.GA',
+        ':dom4j:1.6.1',
+        ':antlr:2.7.6'
+}
+
+task oneJar(type: Jar) {
+    manifest {
+        attributes 'Implementation-Version': version,
+            'Main-Class': 'com.oltpbenchmark.DBWorkload'
+    }
+    baseName = project.name + '-all'
+
+    from sourceSets.main.output
+    from ('src') {
+        include '**/*-ddl.sql',
+            '**/*-dialects.xml',
+            '**/*.xsd',
+            '**/histogram.*.gz',
+            '**/table.*.gz'
+    }
+    from (projectDir) {
+        include 'log4j.properties'
+    }
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.findAll { it.name.endsWith('jar') }.collect { zipTree(it) }
+    }
+}
+
+task copyOneJar(type: Copy) {
+    from oneJar
+    into { project.buildDir }
+}
+// Full/abosolute path file name
+def jf = new File(copyOneJar.outputs.files.singleFile, oneJar.archiveFileName.get())
+def sf = new File(project.buildDir, "oltpbenchmark")
+
+task createScript() {
+    outputs.files(sf)
+    // filename only w/o any path
+    def jarfile = new File(oneJar.archiveFileName.get())
+    doLast {
+        sf.text = """
+#!/bin/bash
+SCRIPT_DIR="\$( cd "\$( dirname "\$0" )" && pwd )"
+JARFILE="\$SCRIPT_DIR/${jarfile}"
+
+if [[ ! -f "\$JARFILE" ]]; then
+   echo "File \$JARFILE not found"
+   echo "Make sure it has been built with 'gradle build'"
+   exit -1
+fi
+java -Xmx8G -Dlog4j.configuration=log4j.properties -jar "\$JARFILE" \$@
+
+"""
+        project.exec {
+            commandLine('chmod',  '+x', sf)
+        }
+    }
+}
+
+task buildAll (dependsOn: [copyOneJar, createScript]) {
+    doLast {
+        println "Created wrapper script: " + sf
+        println "Created all-in-one companion JAR: " + jf
+    }
+}
+
+build.finalizedBy(buildAll)
